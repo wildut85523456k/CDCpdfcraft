@@ -2039,6 +2039,66 @@ pub fn sign_with_timestamp(
     sign_inner(doc, id, opts, Some(tsa))
 }
 
+/// Sign, embed an RFC 3161 signature timestamp, fetch online revocation evidence, embed it
+/// in the DSS, and append a document timestamp — PAdES B-T → B-LT → B-LTA in one call.
+/// The transports for timestamp queries and for fetching OCSP responses and CRLs are the
+/// caller's ([`crate::timestamp::TimestampAuthority`], [`crate::ltv::Fetcher`]); this crate
+/// never opens a socket.
+pub fn sign_with_ltv(
+    doc: &Document,
+    id: &DigitalId,
+    opts: &SignOptions,
+    tsa: &dyn crate::timestamp::TimestampAuthority,
+    fetcher: &dyn crate::ltv::Fetcher,
+) -> Result<Vec<u8>, SignError> {
+    // PAdES B-T: sign and embed a signature timestamp token.
+    let bt = sign_with_timestamp(doc, id, opts, tsa)?;
+
+    // Re-open the B-T file to read back the signature and its certificate chain.
+    let cos = Document::open(Arc::new(bt)).map_err(|e| SignError::Pdf(e.to_string()))?;
+
+    // Collect every certificate carried in the signature CMS — the signer's chain
+    // and any certificates embedded by the TSA inside its timestamp token.
+    let mut pool: Vec<Certificate> = Vec::new();
+    for contents in signature_contents(&cos) {
+        if let Ok(sd) = SignedData::parse(&contents) {
+            for c in &sd.certificates {
+                if !pool.iter().any(|x| x.raw == c.raw) {
+                    pool.push(c.clone());
+                }
+            }
+            if let Some(token_bytes) = &sd.signer.timestamp_token {
+                if let Ok(token_sd) = SignedData::parse(token_bytes) {
+                    for c in &token_sd.certificates {
+                        if !pool.iter().any(|x| x.raw == c.raw) {
+                            pool.push(c.clone());
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    // Build the signer's chain from the extracted certificates (leaf first, root last).
+    let at = fetcher.now();
+    let chain: Vec<Certificate> = build_chain(&id.certificate, &pool, Some(at)).iter().map(|c| (*c).clone()).collect();
+
+    // Fetch revocation evidence (OCSP / CRL) through the caller-supplied transport.
+    let evidence = crate::ltv::fetch_evidence(&chain, fetcher);
+
+    // PAdES B-LT: embed the DSS with `/VRI` entries. Skip when there is nothing
+    // to embed (e.g. a self-signed ID with no chain and no revocation URLs).
+    let date = opts.date.as_str();
+    let blta = if !evidence.certs.is_empty() || !evidence.ocsps.is_empty() || !evidence.crls.is_empty() {
+        let lt_bytes = crate::dss::embed(&cos, &evidence)?;
+        let lt_cos = Document::open(Arc::new(lt_bytes)).map_err(|e| SignError::Pdf(e.to_string()))?;
+        crate::timestamp_document(&lt_cos, tsa, date)?
+    } else {
+        crate::timestamp_document(&cos, tsa, date)?
+    };
+    Ok(blta)
+}
+
 /// Extra `/Contents` headroom for an attached RFC 3161 token (a TSA response with its
 /// certificate chain is typically 4–8 KiB; the token is also size-capped on parsing).
 const TOKEN_RESERVE: usize = 16 * 1024;

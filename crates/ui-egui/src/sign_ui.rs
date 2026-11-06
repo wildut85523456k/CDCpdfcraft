@@ -1077,6 +1077,15 @@ fn sign_as(ui: &mut egui::Ui, app: &mut PdfCraftApp, t: &Tokens) -> bool {
             d.certify = Some(p);
             ui.end_row();
         }
+        // Lock document after signing: a shortcut to DocMDP level 1 (no changes allowed).
+        {
+            ui.label(tl!("Lock document after signing"));
+            let mut lock = d.certify == Some(1);
+            if ui.checkbox(&mut lock, "").changed() {
+                d.certify = if lock { Some(1) } else { None };
+            }
+            ui.end_row();
+        }
         let l = ui.label(tl!("Reason"));
         ui.add(crate::widgets::line(&mut d.reason).hint_text(tl!("Optional")).desired_width(260.0)).labelled_by(l.id);
         ui.end_row();

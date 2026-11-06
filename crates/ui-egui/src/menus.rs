@@ -148,6 +148,7 @@ const EDIT: &[&str] = &[
     "edit.snapshot",
     SEP,
     "edit.attach",
+    "portfolio.set",
     "form.clear",
     SEP,
     "app.preferences",

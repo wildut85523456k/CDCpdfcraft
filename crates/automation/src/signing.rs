@@ -258,7 +258,18 @@ impl Automation {
             graphic,
             ..SignOptions::default()
         };
-        let signed = self.session.sign(doc_id, &id, opts).map_err(|e| match e {
+        let tsa = a.opt_str("tsa")?.unwrap_or_default();
+        let ltv = a.opt_bool("ltv")?.unwrap_or(false);
+
+        let signed = if ltv && !tsa.is_empty() {
+            let fetcher = pdfcraft_platform::http::HttpFetcher::new(tsa);
+            self.session.sign_with_ltv(doc_id, &id, opts, &fetcher, &fetcher)
+        } else if !tsa.is_empty() {
+            let fetcher = pdfcraft_platform::http::HttpFetcher::new(tsa);
+            self.session.sign_with_timestamp(doc_id, &id, opts, &fetcher)
+        } else {
+            self.session.sign(doc_id, &id, opts)
+        }.map_err(|e| match e {
             // A graphic the signer refuses is the caller's to fix.
             pdfcraft_engine::EditError::Sign(m) if m.starts_with("the signature graphic") => bad(m),
             e => failed(e),

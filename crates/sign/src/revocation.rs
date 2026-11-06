@@ -2,7 +2,7 @@
 //! status lookup for evidence embedded in a DSS or supplied by the caller. Never fetches:
 //! the transport and the choice of evidence stay with the caller.
 
-use crate::der::{Tlv, tag};
+use crate::der::{self, Tlv, tag};
 use crate::keys::{self, DigestAlg, PublicKey};
 use crate::x509::Certificate;
 use crate::{SignError, Time};
@@ -140,6 +140,22 @@ impl CertId {
             issuer_key_hash: hash_alg.digest(&[&issuer.public_key.key_bits()]),
             serial: cert.serial.clone(),
         }
+    }
+
+    /// Encode this `CertID` as the body of a DER `OCSPRequest` (RFC 6960 §4.1.1). The request
+    /// is `SEQUENCE { TBSRequest }` with version v1 and a single `Request` carrying this CertID;
+    /// no extensions or requestor name. Send the bytes as an HTTP POST with content-type
+    /// `application/ocsp-request`.
+    pub fn encode_request(&self) -> Vec<u8> {
+        let cert_id = der::seq(&[
+            &der::algorithm(self.hash_alg.oid(), None),
+            &der::octets(&self.issuer_name_hash),
+            &der::octets(&self.issuer_key_hash),
+            &der::uint(&self.serial),
+        ]);
+        let request = der::seq(&[&cert_id]);
+        let tbs = der::seq(&[&der::explicit(0, &der::int(0)), &request]);
+        der::seq(&[&tbs])
     }
 }
 

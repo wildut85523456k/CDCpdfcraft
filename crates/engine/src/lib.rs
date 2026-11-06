@@ -46,7 +46,7 @@ pub use signature_scan::{PhotoRect, ScanError, SignaturePhoto, Turn};
 pub use stamp_preview::StampPreview;
 pub use text_preview::TextEditPreview;
 
-pub use pdfcraft_organize::{BoxSpec, FieldConflicts, PageBox, SplitBy, Transition, TransitionSpec, mime_for_name, split_ranges};
+pub use pdfcraft_organize::{BoxSpec, FieldConflicts, PageBox, PortfolioView, CollectionField, SplitBy, Transition, TransitionSpec, mime_for_name, split_ranges};
 
 /// One file produced by a split: (1-based first page, last page, PDF bytes).
 pub use pdfcraft_organize::LabelStyle;
@@ -281,7 +281,7 @@ fn scope_of(edit: &Edit) -> Scope {
     match edit {
         Edit::SetInfo { .. } => Scope::Metadata,
         // The Attachments list is read from the whole document.
-        Edit::AddAttachment { .. } | Edit::DeleteAttachment { .. } => Scope::Full,
+        Edit::AddAttachment { .. } | Edit::DeleteAttachment { .. } | Edit::SetPortfolio { .. } => Scope::Full,
         // A file attachment also changes the Attachments list.
         Edit::AddAnnotation(a) if matches!(a.shape, Shape::Attachment { .. }) => Scope::Full,
         Edit::AddMeasurement(_)
@@ -1672,6 +1672,14 @@ pub enum Edit {
     DeleteAttachment {
         key: String,
     },
+    /// Edit ▸ Portfolio: set (or clear, with `title: None`) the `/Collection` dictionary that
+    /// turns the document's embedded files into a PDF Portfolio. `view` sets the initial side-panel
+    /// layout; `fields` defines the Details-view columns.
+    SetPortfolio {
+        title: Option<String>,
+        view: Option<pdfcraft_organize::PortfolioView>,
+        fields: Vec<pdfcraft_organize::CollectionField>,
+    },
     /// Build a tagged structure tree for an untagged, text-only document.
     AutoTagText,
     /// Add alternate text: set (or clear, with `None`) a figure's alternate text. `figure` is
@@ -2207,6 +2215,12 @@ impl Edit {
             Edit::SetInitialView(_) => Label::of("Change initial view"),
             Edit::AddAttachment { name, .. } => Label::with("Attach {name}", name.as_str()),
             Edit::DeleteAttachment { key } => Label::with("Delete attachment {key}", key.as_str()),
+            Edit::SetPortfolio { title, .. } => {
+                match title {
+                    Some(t) => Label::with("Create portfolio {name}", t.as_str()),
+                    None => Label::of("Remove portfolio"),
+                }
+            }
             Edit::AutoTagText => Label::of("Automatically tag text"),
             Edit::SetAltText { .. } => Label::of("Set alternate text"),
             Edit::AutoTagFormFields => Label::of("Tag form fields"),
@@ -2422,6 +2436,7 @@ fn check_permission(edit: &Edit, p: &pdfcraft_cos::Permissions) -> Result<(), Ed
         | Edit::SetInitialView(_)
         | Edit::AddAttachment { .. }
         | Edit::DeleteAttachment { .. }
+        | Edit::SetPortfolio { .. }
         | Edit::AutoTagText
         | Edit::SetAltText { .. }
         | Edit::AutoTagFormFields
@@ -2636,6 +2651,10 @@ fn run_edit(doc: &mut pdfcraft_cos::Document, edit: &Edit, cx: &mut EditCtx) -> 
             pdfcraft_organize::add_attachment(doc, name, bytes, description.as_deref(), mime.as_deref(), cx.date.as_deref())?;
         }
         Edit::DeleteAttachment { key } => pdfcraft_organize::delete_attachment(doc, key)?,
+        Edit::SetPortfolio { title, view, fields } => {
+            let v = view.unwrap_or_default();
+            pdfcraft_organize::set_portfolio(doc, title.as_deref(), v, fields)?;
+        }
         Edit::ReplaceText { page, quads, text, author, strike, caret } => {
             // One `/NM` each: the caret replies to the strikeout, and XFDF names that reply by
             // the strikeout's `/NM` (#2666).
@@ -5395,6 +5414,32 @@ impl Session {
         let embedded = Arc::new(pdfcraft_sign::dss::embed(&cos, evidence)?);
         self.check_save(doc, &embedded)?;
         Ok(embedded)
+    }
+
+    /// Sign, embed an RFC 3161 signature timestamp, fetch online revocation evidence (OCSP/CRL)
+    /// and embed it in the DSS, then append a document timestamp — PAdES B-T → B-LT → B-LTA in
+    /// one call (Acrobat's "Sign and certify with timestamp and LTV"). The transports for timestamp
+    /// queries and evidence fetching are the caller's
+    /// ([`TimestampAuthority`], [`Fetcher`](pdfcraft_sign::ltv::Fetcher)); the engine never opens a
+    /// socket itself.
+    pub fn sign_with_ltv(
+        &self,
+        doc: DocId,
+        id: &pdfcraft_sign::DigitalId,
+        mut opts: SignOptions,
+        tsa: &dyn pdfcraft_sign::TimestampAuthority,
+        fetcher: &dyn pdfcraft_sign::ltv::Fetcher,
+    ) -> Result<Arc<Vec<u8>>, EditError> {
+        let d = self.get(doc).ok_or(EditError::NoDocument)?;
+        // Encrypted documents are signed under their permissions (the signer checks them).
+        let editor = d.editor.as_ref().ok_or_else(|| EditError::ReadOnly(d.read_only_reason.clone().unwrap_or_default()))?;
+        if opts.date.is_empty() {
+            opts.date = self.signing_date();
+        }
+        let cos = writable(&editor.cos)?;
+        let signed = Arc::new(pdfcraft_sign::sign_with_ltv(&cos, id, &opts, tsa, fetcher)?);
+        self.check_save(doc, &signed)?;
+        Ok(signed)
     }
 
     /// Record that the signed file `bytes` was saved (to `path`): like [`Session::mark_saved`],

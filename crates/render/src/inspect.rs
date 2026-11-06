@@ -109,6 +109,9 @@ pub struct DocInfo {
     pub layer_groups: Vec<Vec<(u32, u16)>>,
     pub fonts: Vec<FontInfo>,
     pub attachments: Vec<Attachment>,
+    /// The `/Collection` dictionary (ISO 32000-1 §7.11): `Some` when the document is a
+    /// PDF Portfolio, with its title, initial view and Details-view columns.
+    pub portfolio: Option<PortfolioInfo>,
     /// Pages with a presentation transition (`/Trans`) or display time (`/Dur`), in page order.
     pub transitions: Vec<PageTransition>,
     /// Where the document opens (`/OpenAction`): the (0-based page, view) of its destination,
@@ -637,6 +640,18 @@ pub enum AttachmentSource {
     Annotation { page: usize, index: usize },
 }
 
+/// A PDF Portfolio's `/Collection` dictionary (ISO 32000-1 §7.11.2): what the viewer shows
+/// in its portfolio side panel.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct PortfolioInfo {
+    /// The portfolio's title (`/Collection /Title`), when it has one.
+    pub title: Option<String>,
+    /// The initial side-panel layout (`/Collection /View`).
+    pub view: Option<String>,
+    /// The Details-view columns (`/Collection /Fields`), as (header, source) pairs in order.
+    pub fields: Vec<(String, String)>,
+}
+
 /// A font used by the document (Document Properties ▸ Fonts).
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct FontInfo {
@@ -900,6 +915,11 @@ impl<'a> Inspector<'a> {
                 }
             }
             info.has_javascript |= names.get(b"JavaScript").is_ok();
+        }
+        if let Ok(collection) = catalog.get(b"Collection")
+            && let Some(collection) = self.dict(collection)
+        {
+            info.portfolio = Some(self.portfolio(collection));
         }
         if let Ok(action) = catalog.get(b"OpenAction")
             && let Some(dict) = self.dict(action)
@@ -1938,6 +1958,35 @@ impl<'a> Inspector<'a> {
             .or_else(|| fallback(text_budget))
             .unwrap_or_else(|| "attachment".into());
         Attachment { name: display, description: d.and_then(|d| self.budgeted_text(d, b"Desc", text_budget)), size, source }
+    }
+
+    /// Read the catalog's `/Collection` dictionary (ISO 32000-1 §7.11.2) into a
+    /// [`PortfolioInfo`]: the portfolio's title, initial view and Details-view columns.
+    fn portfolio(&self, collection: &Dictionary) -> PortfolioInfo {
+        let mut info = PortfolioInfo {
+            title: collection.get(b"Title").ok().and_then(|o| self.budgeted_text_obj(o)),
+            view: self.name(collection, b"View"),
+            ..PortfolioInfo::default()
+        };
+        if let Ok(Object::Array(fields)) = collection.get(b"Fields").map(|o| self.resolve(o)) {
+            for f in fields {
+                let Some(d) = self.dict(f) else { continue };
+                let header = d.get(b"Name").ok().and_then(|o| self.budgeted_text_obj(o));
+                let source = self.name(d, b"Subtype");
+                if let (Some(header), Some(source)) = (header, source) {
+                    info.fields.push((header, source));
+                }
+            }
+        }
+        info
+    }
+
+    /// A text value from an object that may be a direct string or an indirect reference to one.
+    fn budgeted_text_obj(&self, o: &Object) -> Option<String> {
+        match self.resolve(o) {
+            Object::String(bytes, _) => Some(text_string(&bytes)),
+            _ => None,
+        }
     }
 }
 

@@ -5,3 +5,6 @@
 
 pub mod desktop_theme;
 pub mod staging;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod http;

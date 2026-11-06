@@ -199,6 +199,10 @@ impl PdfCraftApp {
                 self.dialog = Some(Dialog::Protect);
             }
             "edit.attach" => self.attach_file_dialog(),
+            "portfolio.set" => {
+                self.portfolio_draft = Some(crate::PortfolioDraft::default());
+                self.dialog = Some(Dialog::Portfolio);
+            }
             "protect.remove" => {
                 if self.apply_edit(Edit::RemoveProtection) {
                     self.notify_tr("Security will be removed when you save");

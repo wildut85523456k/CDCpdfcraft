@@ -38,6 +38,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use pdfcraft_engine::{BlockKey, CombineSource, DocId, Document, Edit, Session, TextBlock, block_overlapping, commands};
+use pdfcraft_organize::{CollectionField, PortfolioView};
 use pdfcraft_platform::staging::{StagingName, staging_suffixes};
 use pdfcraft_render::{PageRenderer, PageText, RenderConfig, RenderRequest, RequestKind};
 use serde_json::{Value, json};
@@ -862,6 +863,46 @@ impl Automation {
             "attachment_delete" => {
                 let edit = Edit::DeleteAttachment { key: a.str("name")?.into() };
                 self.apply(&a, edit)?
+            }
+            "portfolio_set" => {
+                let view = match a.opt_str("view")? {
+                    None => None,
+                    Some(v) => Some(match v {
+                        "tile" => PortfolioView::Tile,
+                        "list" => PortfolioView::List,
+                        "details" => PortfolioView::Details,
+                        "hidden" => PortfolioView::Hidden,
+                        other => return Err(ToolError::InvalidArgs(format!("unknown portfolio view {other:?} (tile, list, details, hidden)"))),
+                    }),
+                };
+                let fields = match a.get("fields") {
+                    None | Some(Value::Null) => Vec::new(),
+                    Some(Value::Array(items)) => {
+                        let mut out = Vec::with_capacity(items.len());
+                        for f in items {
+                            let o = f.as_object().ok_or_else(|| ToolError::InvalidArgs("fields entries must be objects".into()))?;
+                            let name = o.get("name").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidArgs("fields[].name is required".into()))?;
+                            let source = o.get("source").and_then(Value::as_str).ok_or_else(|| ToolError::InvalidArgs("fields[].source is required".into()))?;
+                            out.push(CollectionField { name: name.to_string(), source: source.to_string() });
+                        }
+                        out
+                    }
+                    Some(_) => return Err(ToolError::InvalidArgs("fields must be an array of {name, source} objects".into())),
+                };
+                let title = a.opt_str("title")?.map(str::to_string);
+                let edit = Edit::SetPortfolio { title, view, fields };
+                self.apply(&a, edit)?
+            }
+            "portfolio_info" => {
+                let doc = self.doc(&a)?;
+                let portfolio = doc.info.portfolio.clone();
+                json!({
+                    "is_portfolio": portfolio.is_some(),
+                    "title": portfolio.as_ref().and_then(|p| p.title.clone()),
+                    "view": portfolio.as_ref().and_then(|p| p.view.clone()),
+                    "fields": portfolio.as_ref().map(|p| p.fields.iter().map(|(n, s)| json!({ "name": n, "source": s })).collect::<Vec<_>>()).unwrap_or_default(),
+                    "files": doc.info.attachments.iter().map(|at| json!({ "name": at.name, "description": at.description, "size": at.size })).collect::<Vec<_>>(),
+                })
             }
             "doc_remove_hidden" => self.doc_remove_hidden(&a)?,
             "doc_audit_redactions" => self.doc_audit_redactions(&a)?,

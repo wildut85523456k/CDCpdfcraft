@@ -9,6 +9,12 @@ license.workspace = true
 workspace = true
 
 [dependencies]
+pdfcraft-sign = { workspace = true }
+
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
+# HTTP transport for OCSP, CRL, and RFC 3161 timestamp fetches. Already in the
+# dependency graph as a transitive, so no new compilation unit.
+ureq = { version = "3", default-features = false, features = ["rustls", "cookies", "gzip"] }
 
 [target.'cfg(target_os = "macos")'.dependencies]
 # `write_atomically`: a volume that refuses F_FULLFSYNC gets a plain fsync.

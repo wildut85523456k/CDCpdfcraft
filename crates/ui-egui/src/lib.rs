@@ -110,6 +110,8 @@ mod page_selection_ui;
 mod pageboxes;
 mod palette;
 mod panels;
+mod portfolio_ui;
+pub use portfolio_ui::PortfolioDraft;
 #[cfg(not(target_arch = "wasm32"))]
 mod pickers;
 pub mod prepare;
@@ -341,6 +343,8 @@ pub enum Dialog {
     SummarizeComments,
     /// Sign with a Digital ID ▸ Configure ▸ Sign as.
     Sign,
+    /// Portfolio: turn the document into a PDF Portfolio.
+    Portfolio,
     /// Optimize PDF ▸ Advanced optimization.
     Optimize,
     /// Prepare a form ▸ right-click a field ▸ Duplicate.
@@ -825,6 +829,8 @@ pub struct PdfCraftApp {
     pub summary_sort: pdfcraft_engine::SummarySort,
     /// The signing dialogs' state.
     pub sign_draft: Option<SignDraft>,
+    /// The portfolio dialog's state.
+    pub portfolio_draft: Option<PortfolioDraft>,
     /// Digital ID files the user has created or added.
     pub digital_ids: Vec<DigitalIdEntry>,
     /// Signatures panel: expanded entries (field names).
@@ -1209,6 +1215,7 @@ impl PdfCraftApp {
             rotate_draft: RotateDraft::default(),
             summary_sort: Default::default(),
             sign_draft: None,
+            portfolio_draft: None,
             digital_ids: Vec::new(),
             sig_expanded: Vec::new(),
             a11y_options: a11y_ui::A11yOptions::default(),

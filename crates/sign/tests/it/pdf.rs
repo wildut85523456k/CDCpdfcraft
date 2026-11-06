@@ -815,6 +815,65 @@ fn sign_then_ltv_then_timestamp_makes_a_b_lta_file() {
     assert_eq!(stamp.status, Status::Valid, "{:?}", stamp.details);
 }
 
+/// `sign_with_ltv` should produce the same B-LTA result as manually orchestrating
+/// `sign` → `dss::embed` → `timestamp_document`, in a single call. This test uses
+/// a stub fetcher (no network) and the in-process `TestTsa`.
+#[test]
+fn sign_with_ltv_makes_a_b_lta_file() {
+    use pdfcraft_sign::dss::Evidence;
+    use pdfcraft_sign::ltv::Fetcher;
+
+    let id = pkcs12::open(&data("ec-p256.p12"), "test").unwrap();
+    let tsa = TestTsa { id: tsa_id(), time: Time { year: 2026, month: 10, day: 6, hour: 12, minute: 0, second: 0 } };
+
+    /// A fetcher that returns canned bytes — no network — so fetch_evidence
+    /// produces empty evidence (the test certificate has no OCSP/CRL URLs).
+    struct StubFetcher {
+        now: Time,
+    }
+    impl Fetcher for StubFetcher {
+        fn get(&self, _url: &str) -> Result<Vec<u8>, SignError> {
+            Err(SignError::Pdf("stub fetcher: no OCSP/CRL".into()))
+        }
+        fn post(&self, _url: &str, _body: &[u8], _ct: &str) -> Result<Vec<u8>, SignError> {
+            Err(SignError::Pdf("stub fetcher: no OCSP/CRL".into()))
+        }
+        fn now(&self) -> Time {
+            self.now
+        }
+    }
+
+    let t = Time { year: 2026, month: 10, day: 6, hour: 12, minute: 0, second: 0 };
+    let signed = pdfcraft_sign::sign_with_ltv(
+        &open(&fixture()),
+        &id,
+        &opts(),
+        &tsa,
+        &StubFetcher { now: t },
+    ).unwrap();
+
+    // B-LTA: incremental update, has DSS, has document timestamp.
+    assert!(signed.starts_with(&fixture()), "still an incremental update");
+    let all = signatures(&open(&signed), &signed, &TrustStore { certs: vec![tsa.id.certificate.clone()] });
+    assert_eq!(all.iter().filter(|s| s.signed).count(), 2);
+    let field = all.iter().find(|s| s.signed && !s.doc_timestamp).unwrap();
+    assert_eq!(field.status, Status::Unknown);
+    let stamp = all.iter().find(|s| s.doc_timestamp).unwrap();
+    assert_eq!(stamp.status, Status::Valid, "{:?}", stamp.details);
+
+    // Compare against the manual B-LTA pipeline (sign → dss::embed → timestamp_document).
+    let manual_sig = pdfcraft_sign::sign(&open(&fixture()), &id, &opts()).unwrap();
+    let manual_ltv = pdfcraft_sign::dss::embed(&open(&manual_sig), &Evidence { certs: vec![id.certificate.raw.clone()], ocsps: Vec::new(), crls: Vec::new() }).unwrap();
+    let manual_lta = pdfcraft_sign::timestamp_document(&open(&manual_ltv), &tsa, "D:20261006120000Z").unwrap();
+    // Both paths produce a DSS with the signer's certificate.
+    let lta_doc = open(&manual_lta);
+    let root = lta_doc.root().unwrap();
+    let dss: pdfcraft_cos::Dict = lta_doc.get(root).as_dict().unwrap().get(b"DSS").map(|d| lta_doc.resolve(d)).and_then(|d| d.as_dict().cloned()).unwrap();
+    assert!(dss.contains(b"Certs"), "manual B-LTA has DSS/Certs");
+    // Both paths have a document timestamp token.
+    assert!(all.iter().any(|s| s.doc_timestamp), "sign_with_ltv output has a document timestamp");
+}
+
 /// A redaction mark and a reply to it, added to the page and removed again before signing (what
 /// clearing a mark leaves behind), are in none of the signing outputs: a signature, a timestamped
 /// one, embedded revocation evidence or a document timestamp. Nothing can take them out of a

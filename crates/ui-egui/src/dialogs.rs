@@ -924,6 +924,32 @@ fn dialogs(app: &mut PdfCraftApp, ctx: &egui::Context) {
                 }
                 return;
             }
+            Dialog::Portfolio => {
+                let (create, clear, add_file, title, view, fields) = crate::portfolio_ui::body(ui, app, &t);
+                if add_file {
+                    app.attach_file_dialog();
+                }
+                if create && !title.trim().is_empty() {
+                    let edit = Edit::SetPortfolio {
+                        title: Some(title),
+                        view: Some(view),
+                        fields,
+                    };
+                    if app.apply_edit(edit) {
+                        app.notify_tr("Portfolio created");
+                        app.portfolio_draft = None;
+                        close = true;
+                    }
+                } else if clear {
+                    let edit = Edit::SetPortfolio { title: None, view: Some(view), fields: Vec::new() };
+                    if app.apply_edit(edit) {
+                        app.notify_tr("Portfolio cleared");
+                        app.portfolio_draft = None;
+                        close = true;
+                    }
+                }
+                return;
+            }
             Dialog::SummarizeComments => {
                 ui.label(egui::RichText::new(tl!("Summarize Options")).font(theme::semibold(18.0)));
                 ui.add_space(8.0);
